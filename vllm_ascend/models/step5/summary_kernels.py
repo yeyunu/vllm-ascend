@@ -10,8 +10,8 @@ through the block table, exactly like upstream.
 
 Semantics pinned against upstream:
 
-* One fp8 (e4m3) summary per *completed* ``region_block_size``-token region,
-  written with the fp32 -> bf16 -> e4m3 double rounding of the CuTe kernels.
+* One BF16 summary per *completed* ``region_block_size``-token region,
+  written from the accumulated FP32 mean with a single BF16 conversion.
 * A region being filled keeps its state in a fixed-capacity active slot:
   decode stages raw tokens (``active_token_k/z/valid``) and folds them at
   completion; prefill folds immediately and keeps the running
@@ -47,15 +47,13 @@ __all__ = [
 
 
 @triton.jit
-def _csa_store_fp8_mean(mean_cache_ptr, offset, value, mask):
-    """Store an fp32 mean vector through the bf16 -> e4m3 double rounding.
+def _csa_store_bf16_mean(mean_cache_ptr, offset, value, mask):
+    """Store an fp32 mean vector directly as BF16.
 
-    The CuTe producer rounds fp32 -> bf16 -> e4m3; going straight from fp32
-    flips values sitting on an e4m3 midpoint. The parity gate compares
-    bytes, so this is not cosmetic.
+    The producer keeps the accumulated FP32 mean and converts it once to BF16.
     """
-    fp8_value = value.to(tl.bfloat16).to(tl.float8e4nv)
-    tl.store(mean_cache_ptr + offset, fp8_value, mask=mask)
+    bf16_value = value.to(tl.bfloat16)
+    tl.store(mean_cache_ptr + offset, bf16_value, mask=mask)
 
 
 def _get_num_vector_cores() -> int:
@@ -101,7 +99,7 @@ def _csa_reset_blocks_kernel(
 ) -> None:
     """Reset one summary fragment of one physical page (grid: block, frag).
 
-    Clears the page-backed fp8 payload and the active slot that owns a region
+    Clears the page-backed BF16 payload and the active slot that owns a region
     of the page (if any). The reverse map is only a hint, so slot ownership
     is validated against ``active_region_ids`` before clearing slot state.
     ``blocks_per_scheduler_block`` is 1 on Ascend: the scheduler block id is
@@ -245,7 +243,7 @@ def _csa_decode_stage_flush_kernel(
     of distinct requests never share a physical region (their tail tokens
     live in privately owned pages), so one program per row is race free.
 
-    Non-completing tokens only enter the staging buffer; the page-backed fp8
+    Non-completing tokens only enter the staging buffer; the page-backed BF16
     mean is written exactly once, when the region fills, folding the staged
     tokens, the current token, and any prefill-left prefix numerator/
     denominator/max with one shared scalar max.
@@ -303,7 +301,7 @@ def _csa_decode_stage_flush_kernel(
             0,
             mask=has_slot & (toks < REGION_BLOCK_SIZE),
         )
-        _csa_store_fp8_mean(
+        _csa_store_bf16_mean(
             mean_cache
             + (region // SUMMARIES_PER_PAGE) * mean_stride_page
             + (region % SUMMARIES_PER_PAGE) * PROXY_DIM,
@@ -369,7 +367,7 @@ def _csa_decode_stage_flush_kernel(
             numerator / tl.maximum(denominator_acc, 1.0e-20),
             0.0,
         )
-        _csa_store_fp8_mean(
+        _csa_store_bf16_mean(
             mean_cache
             + (region // SUMMARIES_PER_PAGE) * mean_stride_page
             + (region % SUMMARIES_PER_PAGE) * PROXY_DIM,
@@ -676,7 +674,7 @@ def _csa_prefill_update_ordered_kernel(
                     )
 
                     if complete:
-                        _csa_store_fp8_mean(
+                        _csa_store_bf16_mean(
                             mean_cache
                             + (region // SUMMARIES_PER_PAGE) * MEAN_STRIDE_PAGE
                             + (region % SUMMARIES_PER_PAGE) * PROXY_DIM,
@@ -1019,7 +1017,7 @@ def _csa_prefill_update_kernel(
         # 完成后按实际 region 编号定位页内缓存，写入最终 summary，
         # 然后清空并释放已有 slot；完整 region 不需要新申请 slot。
         if complete:
-            _csa_store_fp8_mean(
+            _csa_store_bf16_mean(
                 mean_cache
                 + (region // SUMMARIES_PER_PAGE) * MEAN_STRIDE_PAGE
                 + (region % SUMMARIES_PER_PAGE) * PROXY_DIM,
@@ -1310,7 +1308,7 @@ def _csa_verify_stage_kernel(
     contribution -- this is the Ascend equivalent of the upstream
     ``Step5DSAMTPTransaction`` rollback, with the accepted-prefix state
     recovered by replay instead of by fp32 snapshots. Regions therefore only
-    materialize into the fp8 page cache through the deferred flush below,
+    materialize into the BF16 page cache through the deferred flush below,
     once they are provably fully committed.
 
     One program per request stages its K+1 rows sequentially in row order:
@@ -1367,7 +1365,7 @@ def _csa_verify_stage_kernel(
                         0,
                         mask=toks < REGION_BLOCK_SIZE,
                     )
-                _csa_store_fp8_mean(
+                _csa_store_bf16_mean(
                     mean_cache
                     + (region // SUMMARIES_PER_PAGE) * mean_stride_page
                     + (region % SUMMARIES_PER_PAGE) * PROXY_DIM,
@@ -1425,7 +1423,7 @@ def _csa_verify_stage_kernel(
 
                 if offset == REGION_BLOCK_SIZE - 1:
                     # Upstream alignment: fold the region the moment its last
-                    # offset is staged and install the mean into the fp8 page
+                    # offset is staged and install the mean into the BF16 page
                     # cache, so the indexer scoring in this same forward sees
                     # a real summary for it (the GPU MTP transaction kernel
                     # installs every touched region the same way). The slot
@@ -1500,7 +1498,7 @@ def _csa_verify_stage_kernel(
                         fold_num / tl.maximum(fold_den, 1.0e-20),
                         0.0,
                     )
-                    _csa_store_fp8_mean(
+                    _csa_store_bf16_mean(
                         mean_cache
                         + (region // SUMMARIES_PER_PAGE) * mean_stride_page
                         + (region % SUMMARIES_PER_PAGE) * PROXY_DIM,
@@ -1695,7 +1693,7 @@ def _csa_deferred_flush_kernel(
         numerator / tl.maximum(denominator_acc, 1.0e-20),
         0.0,
     )
-    _csa_store_fp8_mean(
+    _csa_store_bf16_mean(
         mean_cache
         + (region // SUMMARIES_PER_PAGE) * mean_stride_page
         + (region % SUMMARIES_PER_PAGE) * PROXY_DIM,

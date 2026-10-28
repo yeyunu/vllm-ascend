@@ -3,7 +3,7 @@
 
 Structure mirrors the upstream CUDA implementation
 (``vllm.models.step5.sparse_summary_cache``): a per-layer
-``Step5SparseSummaryCacheLayer``-compatible module owns a page-backed fp8
+``Step5SparseSummaryCacheLayer``-compatible module owns a page-backed BF16
 summary sidecar whose lifetime follows the owner KV blocks, plus the
 fixed-capacity CSA active-slot runtime state. The cache/layer classes are
 subclassed rather than forked; only the device-specific pieces are replaced:
@@ -12,8 +12,8 @@ subclassed rather than forked; only the device-specific pieces are replaced:
   the ``device.type == "cuda"`` branch / torch fallback of the upstream class;
 * the bound cache object is ``AscendStep5SparseSummaryCache``.
 
-The KV-cache extra-budget accounting, memory-profiling protocol, zeroing
-hooks and COW copy hooks are the upstream, platform-agnostic ones.
+The memory-profiling protocol, zeroing hooks and COW copy hooks are inherited.
+The KV-cache extra budget also accounts for the two-byte BF16 mean payload.
 """
 
 from __future__ import annotations
@@ -28,12 +28,25 @@ from vllm.models.step5.sparse_summary_cache import (
     Step5SparseSummaryCache,
     Step5SparseSummaryCacheConfig,
     Step5SparseSummaryCacheLayer,
-    step5_sparse_summary_cache_bytes_per_block,
 )
 
 from vllm_ascend.models.step5.summary_kernels import csa_reset_blocks
 
 logger = init_logger(__name__)
+
+
+def _bf16_summary_cache_bytes_per_block(
+    *, block_size: int, region_block_size: int,
+    proxy_dim: int, num_kv_heads: int = 1,
+) -> int:
+    """Size the BF16 mean payload; producer scratch is budgeted separately."""
+    if proxy_dim <= 0 or num_kv_heads <= 0:
+        raise ValueError("Summary proxy_dim and num_kv_heads must be positive")
+    fragments = Step5SparseSummaryCacheConfig.max_region_fragments_per_block(
+        block_size=block_size, region_block_size=region_block_size,
+    )
+    return int(fragments * num_kv_heads * proxy_dim
+               * torch.tensor([], dtype=torch.bfloat16).element_size())
 
 
 @dataclass
@@ -67,9 +80,42 @@ class AscendStep5SparseSummaryCache(Step5SparseSummaryCache):
     ``device.type == "cuda"`` and falls back to a torch implementation that
     pays several device syncs per call (``.any()``/``unique``/``isin``).
     Block reset fires on every scheduler block allocation, so on Ascend the
-    Triton kernel is the only path: it clears the fp8 payload, both slot maps
+    Triton kernel is the only path: it clears the BF16 payload, both slot maps
     and the slot's numerator/denominator/max/staging state in one launch.
     """
+
+    def __init__(
+        self, *, config: Step5SparseSummaryCacheConfig,
+        sum_cache: torch.Tensor, count_cache: torch.Tensor,
+        mean_cache: torch.Tensor | None = None,
+        blocks_per_scheduler_block: int = 1,
+    ) -> None:
+        # The upstream constructor enforces uint8 FP8 mean storage. Keep the
+        # same scratch layout and lifecycle, with native BF16 means on Ascend.
+        self.config = config
+        self.sum_cache = sum_cache
+        self.count_cache = count_cache
+        self.mean_cache = mean_cache if mean_cache is not None else torch.zeros(
+            config.sum_shape, device=sum_cache.device, dtype=torch.bfloat16,
+        )
+        self.blocks_per_scheduler_block = max(1, int(blocks_per_scheduler_block))
+        expected_sum_shape = (sum_cache.shape[0], 1, self.num_kv_heads, self.proxy_dim)
+        expected_count_shape = (count_cache.shape[0], 1, self.num_kv_heads)
+        for name, tensor, expected in (
+            ("sum_cache", sum_cache, expected_sum_shape),
+            ("count_cache", count_cache, expected_count_shape),
+            ("mean_cache", self.mean_cache, config.sum_shape),
+        ):
+            if tuple(tensor.shape) != expected:
+                raise ValueError(
+                    f"Step5 sparse {name} shape mismatch: expected {expected}, "
+                    f"got {tuple(tensor.shape)}."
+                )
+        if self.mean_cache.dtype != torch.bfloat16:
+            raise ValueError(
+                "Ascend Step5 sparse mean_cache must be BF16, "
+                f"got {self.mean_cache.dtype}."
+            )
 
     def reset_runtime_state(self, *, reset_producer_scratch: bool = True) -> None:
         super().reset_runtime_state(reset_producer_scratch=reset_producer_scratch)
@@ -185,6 +231,19 @@ class AscendStep5SparseSummaryCacheLayer(Step5SparseSummaryCacheLayer):
 
     def _set_summary_cache_budget(self, block_size: int) -> int:
         budget = super()._set_summary_cache_budget(block_size)
+        # Upstream budgets one-byte FP8 means and ignores its dtype argument.
+        # Adjust the backing and scheduler budget together for BF16 storage.
+        payload_bytes = _bf16_summary_cache_bytes_per_block(
+            block_size=block_size,
+            region_block_size=int(self._target_impl.sparse_region_block_size),
+            proxy_dim=int(getattr(self._sparse_config, "proxy_dim", 0) or 0),
+            num_kv_heads=int(
+                getattr(self._target_impl, "summary_cache_num_proxy_kv_heads", 1) or 1
+            ),
+        )
+        backing_bytes = ((payload_bytes + block_size - 1) // block_size) * block_size
+        budget += backing_bytes - self._backing_bytes_per_page
+        self._backing_bytes_per_page = backing_bytes
         # 独立 prefill 缓存增加一份每物理 region 的反向映射。
         reverse_bytes = Step5SparseSummaryCacheConfig.max_region_fragments_per_block(
             block_size=block_size,
@@ -267,18 +326,16 @@ class AscendStep5SparseSummaryCacheLayer(Step5SparseSummaryCacheLayer):
                 f"block_size={block_size}."
             )
         num_blocks = token_capacity // block_size
-        summary_dtype = torch.uint8
+        summary_dtype = torch.bfloat16
         proxy_dim = int(getattr(self._sparse_config, "proxy_dim", 0) or 0)
         num_proxy_kv_heads = int(
             getattr(self._target_impl, "summary_cache_num_proxy_kv_heads", 1) or 1
         )
-        payload_size_bytes = step5_sparse_summary_cache_bytes_per_block(
+        payload_size_bytes = _bf16_summary_cache_bytes_per_block(
             block_size=block_size,
             region_block_size=int(self._target_impl.sparse_region_block_size),
             proxy_dim=proxy_dim,
             num_kv_heads=num_proxy_kv_heads,
-            sum_dtype=summary_dtype,
-            count_dtype=summary_dtype,
         )
         backing_bytes = (
             (int(payload_size_bytes) + int(block_size) - 1) // int(block_size)
@@ -317,18 +374,16 @@ class AscendStep5SparseSummaryCacheLayer(Step5SparseSummaryCacheLayer):
             except Exception:
                 pass
             with _torch.no_grad():
-                fp16_vals = _torch.full(
+                bf16_vals = _torch.full(
                     cache.mean_cache.shape,
                     _fill_mean,
-                    dtype=_torch.float16,
+                    dtype=_torch.bfloat16,
                     device=cache.mean_cache.device,
-                ).to(_torch.float8_e4m3fn)
-                cache.mean_cache.view(_torch.uint8).copy_(
-                    fp16_vals.view(_torch.uint8)
                 )
+                cache.mean_cache.copy_(bf16_vals)
             logger.info_once(
                 "DecodeBenchConnector: filled summary mean_cache with "
-                "dummy fp8 values (mean=%.6f, shape=%s)",
+                "dummy BF16 values (mean=%.6f, shape=%s)",
                 _fill_mean,
                 tuple(cache.mean_cache.shape),
             )
@@ -377,14 +432,12 @@ class AscendStep5SparseSummaryCacheLayer(Step5SparseSummaryCacheLayer):
             num_kv_heads=num_proxy_kv_heads,
             proxy_dim=proxy_dim,
         )
-        summary_dtype = summary_dtype or torch.uint8
-        expected_bytes = step5_sparse_summary_cache_bytes_per_block(
+        summary_dtype = summary_dtype or torch.bfloat16
+        expected_bytes = _bf16_summary_cache_bytes_per_block(
             block_size=config.page_size,
             region_block_size=config.region_block_size,
             proxy_dim=config.proxy_dim,
             num_kv_heads=config.num_kv_heads,
-            sum_dtype=torch.uint8,
-            count_dtype=torch.uint8,
         )
         if int(backing.shape[1]) < expected_bytes:
             raise RuntimeError(
@@ -397,12 +450,16 @@ class AscendStep5SparseSummaryCacheLayer(Step5SparseSummaryCacheLayer):
             * int(config.num_kv_heads)
             * int(config.proxy_dim)
         )
-        if int(backing.shape[1]) < sum_elems:
+        mean_bytes = (
+            int(sum_elems)
+            * torch.tensor([], dtype=summary_dtype).element_size()
+        )
+        if int(backing.shape[1]) < mean_bytes:
             raise RuntimeError(
                 "Step5 sparse mean cache backing is too small: "
-                f"need={sum_elems}, got={int(backing.shape[1])}"
+                f"need={mean_bytes}, got={int(backing.shape[1])}"
             )
-        mean_cache = backing[:, :sum_elems].view(config.sum_shape)
+        mean_cache = backing[:, :mean_bytes].view(summary_dtype).view(config.sum_shape)
         active_capacity = self._target_impl._csa_active_region_capacity()
         sum_cache = self._target_impl._get_dsa_tensor_buffer_at_least(
             "csa_shared_sum_cache",

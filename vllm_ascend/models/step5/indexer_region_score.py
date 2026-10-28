@@ -45,9 +45,9 @@ def indexer_score_topk(
     """Fused score + topk + sort via aclnnIndexerRegionScore.
 
     Args:
-        index_q:  [T, G, H, D] — quantized to float8_e4m3fn internally.
+        index_q:  [T, G, H, D] — preserves the incoming BF16/FP16 dtype.
         weights:  [T, G, H] fp32 — signed per-head weights.
-        mean_cache: [P, S, 1, D] float8_e4m3fn — paged summary cache.
+        mean_cache: [P, S, 1, D] — paged summary cache; it is BF16 and matches the BF16 query.
         block_table: [N, C] int32 — logical-to-physical page map.
         cu_seq_lens: [N+1] int32 — cumulative packed query lengths.
         actual_kv_lengths: [N] int32 — effective KV sequence length of
@@ -72,10 +72,12 @@ def indexer_score_topk(
         columns must not be consumed as scores.
     """
     tokens, groups = index_q.shape[:2]
+    # The cache producer writes BF16 summaries, matching the BF16 query
+    # required by the new IndexerRegionScore ABI.
     scores, ids = indexer_region_score(
-        index_q.to(torch.float8_e4m3fn),
+        index_q,
         weights,
-        paged_key_summary=mean_cache,
+        mean_cache,
         block_table=block_table,
         cu_seq_lens=cu_seq_lens,
         actual_kv_lengths=actual_kv_lengths,

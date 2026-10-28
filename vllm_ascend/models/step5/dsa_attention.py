@@ -3,7 +3,7 @@
 
 Structure mirrors the upstream CUDA implementation
 (``vllm.models.step5.sparse_attention.Step5DSAAttentionImpl``): per-region
-summaries live in a page-backed fp8 side cache whose lifetime follows the
+summaries live in a page-backed BF16 side cache whose lifetime follows the
 owner KV blocks (``vllm_ascend.models.step5.summary_cache``), the per-step
 token -> region layout is built from ``slot_mapping`` by the upstream Triton
 layout builder, and ``forward`` is ``_maybe_update_summary_cache`` followed by
@@ -30,7 +30,7 @@ follow the upstream ``Step5DSAMTP`` contract with an equivalent Ascend
 mechanism: verify rows are *staged* into the active-slot tail state instead
 of folded (staging is last-write-wins per (region, offset), so the next
 round's rewrite of rejected positions is an exact rollback to the accepted
-prefix), and completed regions are only materialized into the fp8 page
+prefix), and completed regions are only materialized into the BF16 page
 cache by the deferred flush once their last position is below the request's
 committed context. The verify attention keeps each request as one
 multi-token varlen request (``query_len = K+1``): the fused indexer's
@@ -982,7 +982,7 @@ class AscendStep5DSAImpl(AttentionImplBase[AscendStep5DSAMetadata]):
         MTP verify batches (uniform K+1 rows per
         decode request) stage their rows without flushing and materialize
         fully-committed regions through the deferred flush, so rejected
-        tokens never pollute the fp8 page cache.
+        tokens never pollute the BF16 page cache.
         """
         num_tokens = int(md.num_actual_tokens)
         if num_tokens <= 0:
@@ -998,7 +998,7 @@ class AscendStep5DSAImpl(AttentionImplBase[AscendStep5DSAMetadata]):
         index_k = index_k[:num_tokens].contiguous()
         index_z = index_z[:num_tokens].contiguous()
         allocation_success = self._begin_csa_allocation_check(summary_cache)
-        mean_cache = summary_cache.mean_cache.view(torch.float8_e4m3fn)
+        mean_cache = summary_cache.mean_cache
         common = dict(
             num_pages=int(summary_cache.num_pages),
             summaries_per_page=int(summary_cache.summaries_per_page),
@@ -1163,7 +1163,7 @@ class AscendStep5DSAImpl(AttentionImplBase[AscendStep5DSAMetadata]):
 
         Deferred flush first: any region whose last position is below the
         committed context (``seq_len - query_len``) is provably final and is
-        materialized into the fp8 page cache. The verify rows themselves are
+        materialized into the BF16 page cache. The verify rows themselves are
         only staged, so the next round's rewrite of rejected positions
         replaces their contribution exactly (the Ascend equivalent of the
         upstream MTP transaction's rollback-to-accepted-prefix). In a mixed
@@ -1298,7 +1298,7 @@ class AscendStep5DSAImpl(AttentionImplBase[AscendStep5DSAMetadata]):
         _scores, ids = indexer_score_topk(
             index_q[:n],
             weights[:n],
-            summary_cache.mean_cache.view(torch.float8_e4m3fn),
+            summary_cache.mean_cache,
             d.block_table,
             cu_seq_lens,
             actual_kv_lengths,
@@ -1375,7 +1375,7 @@ class AscendStep5DSAImpl(AttentionImplBase[AscendStep5DSAMetadata]):
         _scores, ids = indexer_score_topk(
             index_q[:total_tokens],
             weights[:total_tokens],
-            summary_cache.mean_cache.view(torch.float8_e4m3fn),
+            summary_cache.mean_cache,
             decode_md.block_table[:num_decodes],
             cu_seq_lens,
             actual_kv_lengths,
@@ -1457,7 +1457,7 @@ class AscendStep5DSAImpl(AttentionImplBase[AscendStep5DSAMetadata]):
         _scores, ids = indexer_score_topk(
             index_q[:num_query_tokens],
             weights[:num_query_tokens],
-            summary_cache.mean_cache.view(torch.float8_e4m3fn),
+            summary_cache.mean_cache,
             p.block_table[:num_reqs],
             cu_seq_lens,
             actual_kv_lengths,
