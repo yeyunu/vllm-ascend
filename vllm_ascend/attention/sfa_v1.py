@@ -1265,7 +1265,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         attn_metadata: M,
     ):
         if getattr(self, '_alignment_kimi_raw_channels', False):
-            from dsa_alignment import write_raw_nope_cache
+            from vllm_ascend.ops.kimi_alignment.dsa_alignment import write_raw_nope_cache
             return write_raw_nope_cache(self, kv_no_split, slots, kv_cache)
         if self.qk_rope_head_dim == 0 and not self.enable_sparse_sfa_c8:
             assert self.kv_a_layernorm is not None
@@ -2139,7 +2139,7 @@ class AscendSFAImpl(MLAAttentionImpl):
         else:
             raise RuntimeError(f"skip_topk is False but indexer is None. layer_name={self.layer_name}.")
 
-        from dsa_trace import stage
+        from vllm_ascend.ops.kimi_alignment.dsa_trace import stage
         stage('pre_attention', preprocess=str(fused_type), hidden=hidden_states,
               query_latent=q_c, query_absorbed=ql_nope, query_rope=q_pe,
               key_plain=locals().get('k_nope'), key_rope=locals().get('k_pe'),

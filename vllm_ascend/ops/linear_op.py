@@ -197,7 +197,7 @@ class KimiOProjMMReduceScatterOp(CustomRowParallelOp):
         input_parallel = self.get_input_parallel(input_)
         import os
         if os.environ.get("KIMI_ALIGNMENT_FULL_O_PROJ") == "1":
-            from linear_alignment import full_k_sequence_projection
+            from vllm_ascend.ops.kimi_alignment.linear_alignment import full_k_sequence_projection
             return full_k_sequence_projection(self, input_parallel), None
         output = self.quant_method.apply(self.layer, input_parallel, None)
         return sp_reduce_scatter(output), None
@@ -208,7 +208,7 @@ class KimiOProjMMReduceScatterOp(CustomRowParallelOp):
         input_parallel = self.get_input_parallel(input_)
         import os
         if os.environ.get("KIMI_ALIGNMENT_FULL_O_PROJ") == "1":
-            from linear_alignment import full_k_sequence_projection
+            from vllm_ascend.ops.kimi_alignment.linear_alignment import full_k_sequence_projection
             aligned = full_k_sequence_projection(self, input_parallel)
             assert aligned.shape == output.shape, (aligned.shape, output.shape)
             output.copy_(aligned)

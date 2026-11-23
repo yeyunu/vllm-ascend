@@ -1087,7 +1087,7 @@ class NPUModelRunner(GPUModelRunner):
 
         import os as alignment_os
         if alignment_os.environ.get("KIMI_ALIGNMENT_AUDIT_DIR"):
-            from alignment_audit import capture_vllm_v2_step
+            from vllm.v1.worker.gpu.kimi_alignment_audit import capture_vllm_v2_step
             capture_vllm_v2_step(self, logits, hidden_states[sample_indices][:num_logits], input_batch)
 
         # Dispatch tail mirrors GPUModelRunner.sample; refresh it on main bumps.

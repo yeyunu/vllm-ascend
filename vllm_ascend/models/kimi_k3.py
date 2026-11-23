@@ -94,7 +94,7 @@ from vllm_ascend.ops.kimi_kda import (
     AscendKimiK3DeltaAttention as AscendKimiK3DeltaAttentionBase,
 )
 from vllm_ascend.ops.linear_op import KimiOProjMMReduceScatterOp
-from residual_alignment import attn_res_forward as aligned_attn_res_fwd
+from vllm_ascend.ops.kimi_alignment.residual_alignment import attn_res_forward as aligned_attn_res_fwd
 from vllm_ascend.quantization.methods.base import PreparedLinearInput
 from vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8 import AscendW8A8MXFP8DynamicLinearMethod
 from vllm_ascend.utils import get_rotation_path, is_950
@@ -263,7 +263,7 @@ class AscendKimiMLP(KimiMLP):
             assert self.use_sequence_parallel, "Aligned dense MLP requires its SP output contract"
             from types import SimpleNamespace
             from vllm.distributed.parallel_state import get_tp_group
-            from linear_alignment import full_k_sequence_projection
+            from vllm_ascend.ops.kimi_alignment.linear_alignment import full_k_sequence_projection
             import cann_ops_nn.ops
             gate_up, _ = self.gate_up_proj(x)
             activated = torch.ops.cann_ops_nn.situ_glu(
@@ -478,7 +478,7 @@ class AscendKimiMoE(nn.Module):
             pass
 
     def _alignment_routing(self, hidden_states, gating_output, topk, renormalize):
-        from moe_alignment import training_routing
+        from vllm_ascend.ops.kimi_alignment.moe_alignment import training_routing
         c = self._alignment_router_config
         return training_routing(gating_output, self.gate.e_score_correction_bias,
             topk, renormalize, self.routed_scaling_factor,
@@ -488,7 +488,7 @@ class AscendKimiMoE(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens, hidden_size = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_size)
-        from moe_trace import capture_moe
+        from vllm_ascend.ops.kimi_alignment.moe_trace import capture_moe
         with capture_moe(self, hidden_states):
             router_logits, _ = self.gate(hidden_states)
             final_hidden_states = self.experts(
@@ -660,7 +660,7 @@ class AscendKimiDSAAttention(AscendKimiMLAAttention):
 
 
     def forward(self, positions, hidden_states):
-        from dsa_trace import capture_dsa
+        from vllm_ascend.ops.kimi_alignment.dsa_trace import capture_dsa
         with capture_dsa(self, positions, hidden_states):
             return super().forward(positions, hidden_states)
 
@@ -869,7 +869,7 @@ class AscendKimiDecoderLayer(UpstreamKimiDecoderLayer):
             normalized = torch_npu.npu_rms_norm(result[0], self.input_layernorm.weight,
                 epsilon=self.input_layernorm.variance_epsilon)[0]
             result = (normalized, result[1], result[2])
-        from mm_trace import trace_input_norm
+        from vllm_ascend.ops.kimi_alignment.mm_trace import trace_input_norm
         trace_input_norm(self, prefix_sum, block_residual, result, addend, optimize_prefill)
         return result
 
@@ -901,7 +901,7 @@ class AscendKimiDecoderLayer(UpstreamKimiDecoderLayer):
         if self.use_sequence_parallel and not self.fuse_o_proj_mm_reduce_scatter:
             hidden_states = sp_reduce_scatter(hidden_states)
 
-        from mm_trace import trace_post_attention
+        from vllm_ascend.ops.kimi_alignment.mm_trace import trace_post_attention
         trace_post_attention(self, hidden_states, prefix_sum, block_residual)
         mlp_valid_blocks = self.prev_valid_blocks + int(self.is_block_write_layer)
         op = aligned_attn_res_fwd
@@ -1402,7 +1402,7 @@ class AscendKimiK3MultiModalProjector(KimiK25MultiModalProjector):
 )
 class AscendKimiK3ForConditionalGeneration(UpstreamKimiK3ForConditionalGeneration):
     def _process_media_input(self, media_input):
-        from mm_trace import trace_media
+        from vllm_ascend.ops.kimi_alignment.mm_trace import trace_media
         with trace_media(self, media_input):
             return super()._process_media_input(media_input)
 

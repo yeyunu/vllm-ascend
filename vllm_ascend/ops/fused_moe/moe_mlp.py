@@ -45,7 +45,7 @@ def apply_moe_mlp(
                 quant_method=quant_method,
             )
 
-    from moe_trace import stage
+    from vllm_ascend.ops.kimi_alignment.moe_trace import stage
     stage('mlp_input', hidden=mlp_compute_input.hidden_states,
           groups=mlp_compute_input.group_list, group_list_type=mlp_compute_input.group_list_type,
           topk_ids=mlp_compute_input.topk_ids, beta=mlp_compute_input.activation_situ_beta,

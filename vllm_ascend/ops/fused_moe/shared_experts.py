@@ -223,7 +223,7 @@ class AscendSharedExperts:
         if self._alignment_kimi_full_k:
             from types import SimpleNamespace
             from vllm.distributed import get_tp_group
-            from linear_alignment import full_k_sequence_projection
+            from vllm_ascend.ops.kimi_alignment.linear_alignment import full_k_sequence_projection
             group = get_tp_group()
             op = SimpleNamespace(layer=self.layer.down_proj, comm_group=group,
                 tp_rank=group.rank_in_group, tp_size=group.world_size)

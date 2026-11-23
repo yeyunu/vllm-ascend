@@ -157,7 +157,7 @@ class MoECommMethod(ABC):
             fused_experts_input=fused_experts_input,
         )
         token_dispatch_output = self.token_dispatcher.token_dispatch(token_dispatch_input=token_dispatch_input)
-        from moe_trace import stage
+        from vllm_ascend.ops.kimi_alignment.moe_trace import stage
         stage('dispatch', comm=type(self).__name__, input=token_dispatch_input,
               metadata=token_dispatch_output.combine_metadata)
 

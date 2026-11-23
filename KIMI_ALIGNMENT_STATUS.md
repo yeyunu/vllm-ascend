@@ -2,7 +2,7 @@
 
 This branch preserves a coordinated four-layer experiment across yeyunu/verl,
 yeyunu/vllm-ascend, yeyunu/vllm, and yeyunu/FSDPTurbo.
-Use branch codex/kimi-k31-bf16-alignment-20261123 in all four repositories.
+Use branch codex/kimi-k31-bf16-direct-20261123 in all four repositories.
 
 ## Measured scope
 
@@ -40,12 +40,17 @@ That exact commit was unavailable in the public GitHub repository, so its change
 runtime files were captured in a separate inherited-overlay commit on the existing
 fork. This is an experimental source export, not a fresh-install validation.
 
-The shared helpers live in verl/examples/kimi_alignment/runtime. Add that
-directory to PYTHONPATH alongside the four source checkouts. Scripts under
-verl/examples/kimi_alignment/scripts preserve the task's existing workspace
-layout and require the original model, environment and task paths.
-model-code.patch applies to the original four-layer checkpoint's Python files.
-It contains code only, with no model weights.
+Runtime code is integrated into the installed package source directories:
+- verl.utils.kimi_alignment for training audits and independent scoring.
+- vllm_ascend.ops.kimi_alignment for serving arithmetic and traces.
+- fsdp_turbo.ops.npu.kimi_kda_alignment for the training KDA reference.
+- fsdp_turbo.models.kimi.kimi_k31 for the actual model and MC2 expert method.
+- vllm.v1.engine and vllm.v1.worker.gpu for serving probe and capture hooks.
+
+The verl loader selects the package-owned Kimi model when the existing alignment
+switch is enabled. Checkpoint Python patch application and an external helper
+directory on PYTHONPATH are no longer required. Checkpoint weights and their
+configuration are still required. Example scripts retain the original task paths.
 
 No rollout logprob reuse was used for the independent acceptance comparisons.
 The diagnostic scheduler budget control is opt-in and belongs to the pending
@@ -59,3 +64,10 @@ fresh-branch NPU validation have not been run.
 The vLLM-Ascend format.sh ci command was attempted during export and exited
 because pre-commit was unavailable. Python syntax and runtime-source byte checks
 passed. Upstream lint and CI remain unverified.
+
+## Direct-source integration validation
+
+The source layout and loader wiring changed in this branch. Historical zero-diff
+measurements above belong to the earlier runtime layout. The new layout requires
+fresh NPU verification. Export checks include import closure, unchanged arithmetic
+ASTs, MC2 method equivalence and the actual loader's branch behavior.

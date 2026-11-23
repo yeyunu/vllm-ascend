@@ -85,7 +85,7 @@ class AscendGateLinear(GateLinear):
 
     def forward(self, x: torch.Tensor):
         if getattr(self, '_alignment_kimi_training_gate', False):
-            from moe_alignment import training_gate_logits
+            from vllm_ascend.ops.kimi_alignment.moe_alignment import training_gate_logits
             return training_gate_logits(x, self.weight), None
         # Tier 4: bf16 x bf16 -> fp32 accumulation. Eligibility mirrors
         # upstream: bf16 weight (i.e. no fp32 upcast requested), fp32

@@ -1,0 +1,16 @@
+{
+  "syntax_files": 1666,
+  "legacy_imports": [],
+  "missing_owned_imports": [],
+  "arithmetic_equivalence": [
+    "dsa_alignment",
+    "kda_alignment",
+    "linear_alignment",
+    "residual_alignment",
+    "moe_alignment"
+  ],
+  "training_recurrence_equivalence": true,
+  "mc2_method_equivalence": true,
+  "loader_cases_passed": 5,
+  "fresh_npu_verification": "pending"
+}
