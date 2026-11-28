@@ -1,0 +1,115 @@
+{
+  "weight_version": 0,
+  "multimodal_checks": [
+    {
+      "case": "repeat",
+      "valid_tokens": 64,
+      "nonfinite": 0,
+      "identical_history_and_tokens": true,
+      "different": 0,
+      "mean_abs": 0.0,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "case": "mixed",
+      "valid_tokens": 64,
+      "nonfinite": 0,
+      "identical_history_and_tokens": true,
+      "different": 0,
+      "mean_abs": 0.0,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "case": "reordered",
+      "valid_tokens": 64,
+      "nonfinite": 0,
+      "identical_history_and_tokens": true,
+      "different": 0,
+      "mean_abs": 0.0,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "case": "batch16",
+      "valid_tokens": 64,
+      "nonfinite": 0,
+      "identical_history_and_tokens": true,
+      "different": 0,
+      "mean_abs": 0.0,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "case": "decode-vs-full-prefix",
+      "valid_tokens": 1,
+      "nonfinite": 0,
+      "identical_history_and_tokens": true,
+      "different": 0,
+      "mean_abs": 0.0,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "case": "chunked-vs-full-prefill",
+      "valid_tokens": 1,
+      "nonfinite": 0,
+      "identical_history_and_tokens": true,
+      "different": 0,
+      "mean_abs": 0.0,
+      "max_abs": 0.0,
+      "passed": true
+    }
+  ],
+  "actual_chunk_sizes": [
+    511,
+    434
+  ],
+  "long_text_pd": [
+    {
+      "prompt_length": 2047,
+      "response_offset": 1023,
+      "weight_version": 0,
+      "decode_id": 19166,
+      "prefill_id": 19166,
+      "decode_logprob": -0.0001659393310546875,
+      "prefill_logprob": -0.0001659393310546875,
+      "abs_diff": 0.0,
+      "passed": true
+    },
+    {
+      "prompt_length": 2048,
+      "response_offset": 1024,
+      "weight_version": 0,
+      "decode_id": 318,
+      "prefill_id": 318,
+      "decode_logprob": -0.0005950927734375,
+      "prefill_logprob": -0.0005950927734375,
+      "abs_diff": 0.0,
+      "passed": true
+    },
+    {
+      "prompt_length": 2049,
+      "response_offset": 1025,
+      "weight_version": 0,
+      "decode_id": 276,
+      "prefill_id": 276,
+      "decode_logprob": -0.000141143798828125,
+      "prefill_logprob": -0.000141143798828125,
+      "abs_diff": 0.0,
+      "passed": true
+    },
+    {
+      "prompt_length": 3071,
+      "response_offset": 2047,
+      "weight_version": 0,
+      "decode_id": 220,
+      "prefill_id": 220,
+      "decode_logprob": -0.000102996826171875,
+      "prefill_logprob": -0.000102996826171875,
+      "abs_diff": 0.0,
+      "passed": true
+    }
+  ]
+}
